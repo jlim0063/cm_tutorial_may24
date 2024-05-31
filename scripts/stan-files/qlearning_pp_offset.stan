@@ -5,13 +5,13 @@ data {
   int n_options; // no. of options
   
   // Indices
-  array[T] int p_ix;      // Pariticpant number for each datapoint
+  array[T] int p_ix;      // Participant number for each datapoint
   array[T] int condition; // Condition, 0 = control, 1 = experimental
   array[T] int trial_no;  // Trial no
   // Data
   array[T] int actions;          // Dependent variable: action taken (0 = option 1; 1 = option 2)
   array[T] int outcomes;         // Outcome (0 = no reward; 1 = reward)
-  array[T] int time_since_switch; // time since last reversal at trial t
+  array[T] int time_since_reversal; // time since last reversal at trial t
 }
 
 transformed data{
@@ -50,10 +50,10 @@ transformed parameters{
    
    for (loop_p_ix in 1:N){
       // Baseline parameters
-      beta[loop_p_ix] = exp(beta_mu_pr + beta_sigma_pr * beta_pr[loop_p_ix]);
+      beta[loop_p_ix] = Phi_approx(beta_mu_pr + beta_sigma_pr * beta_pr[loop_p_ix]) * 30;
       eta[loop_p_ix]  = Phi_approx(eta_mu_pr + eta_sigma_pr * eta_pr[loop_p_ix]);
       
-      // Offset parameter
+      // Offset parameter (untransformed)
       delta_eta[loop_p_ix] = delta_eta_mu_pr + delta_eta_sigma_pr * delta_eta_pr[loop_p_ix];
       
       // Parameters post-experimental manipulation
@@ -75,15 +75,14 @@ model{
    delta_eta_sigma_pr  ~ exponential(1);    
    
    // participant-level priors
-   beta    ~ normal(0, 1);
-   eta_pr  ~ normal(0, 1);
+   beta_pr       ~ normal(0, 1);
+   eta_pr        ~ normal(0, 1);
+   delta_eta_pr  ~ normal(0, 1);
 
    // Containers ----------------------------------------------//
    vector[2]  Q;     // Q-values of each option
    vector[T]  Q_diff; // difference in Q values
    vector[T]  alpha;  // parameter for bernoulli logit
-   
-   
    
    // Model --------------------------------------------------//
    // fill utilities with calculated options
@@ -92,11 +91,6 @@ model{
       if (trial_no[trial_ix] == 1){
          Q = rep_vector(reward/n_options, 2);
       }
-      
-      // intialise Q-values for a new participant {FROMOLD CODE W/O OFFSET}
-      // if (trial_ix == 1){
-      //   Q = rep_vector(reward/n_options, 2);
-      // }
       
       
       // Calculate difference in Q-values
@@ -113,7 +107,6 @@ model{
          Q[actions[trial_ix] + 1] += eta_exp[p_ix[trial_ix]] * (outcomes[trial_ix] - Q[actions[trial_ix] +1]);
       }
       
-      
       // Specify probability
       actions[trial_ix] ~ bernoulli_logit(alpha[trial_ix]);
    }
@@ -122,7 +115,7 @@ model{
 generated quantities {
   
   // Containers for transformed group means ------------- //
-  real beta_mu = exp(beta_mu_pr);
+  real beta_mu = Phi_approx(beta_mu_pr) * 30;
   real eta_mu  = Phi_approx(eta_mu_pr);
   real delta_eta_mu = delta_eta_mu_pr;
   
@@ -142,12 +135,7 @@ generated quantities {
          Q = rep_vector(reward/n_options, 2);
       }
       
-      // intialise Q-values for a new participant {FROM OLD CODE W/O OFFSET}
-      // if (trial_ix == 1){
-      //   Q = rep_vector(reward/n_options, 2);
-      // }
-      
-        // Calculate difference in Q-values
+      // Calculate difference in Q-values
       Q_diff[trial_ix] = Q[2] - Q[1];
       
       // Calculate parmater for bernoulli logit

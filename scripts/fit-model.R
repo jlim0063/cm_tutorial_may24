@@ -16,7 +16,7 @@ for (path in system_cmdstan_path){
 
 
 # Load data
-sim_data <- read.csv(here::here("data/simulated_data_1.csv")) %>% as.data.table()
+sim_data <- read.csv(here::here("data/simulated_data_2.csv")) %>% as.data.table()
 
 # Set run model flag
 run_model_flag <- T
@@ -26,6 +26,7 @@ run_model_flag <- T
 ## Get no. of unique participants 
 n_participants <- sim_data$subject %>% unique() %>% length()
 n_trials       <- sim_data$trial_no %>% unique() %>% length()
+n_conditions   <- sim_data$condition %>% unique() %>% length()
 
 ## Re-index participants for stan modelling
 for (ID in unique(sim_data$subject)){
@@ -33,17 +34,20 @@ for (ID in unique(sim_data$subject)){
   sim_data[subject == ID, stan_index:=seq(1, n_participants)[index]]
 }
 
+## Re-index condition for stan modelling
+sim_data[, condition_index:=ifelse(condition == "pre", 0, 1)]
 
 # Organise data for Stan
 stan_data <- list(
   ## Metadata
-  N         = n_participants,            # Number of participants 
-  T         = n_participants * n_trials, # Number of trials
+  N         = n_participants,                           # Number of participants 
+  T         = n_participants * n_trials * n_conditions, # Number of trials
   n_options = 2,
   
   ## Indices
-  p_ix      = sim_data$stan_index,    # Index of participant id
-  trial_no  = sim_data[, trial_no],   # Index of trial numbers   
+  p_ix      = sim_data$stan_index,      # Index of participant id
+  trial_no  = sim_data[, trial_no],     # Index of trial numbers   
+  condition = sim_data$condition_index, # Index of condition
   
   ## Data
   actions           = sim_data[, ptresp] ,                # Participant response
@@ -60,16 +64,16 @@ model_stan_dir <- here::here('scripts', 'stan-files')
 
 # M1: Q Learning with Partial Pooling -------------------------------------
 
-model_to_fit   <- model_q_learning_pp
+model_to_fit   <- model_q_learning_pp_offset
 
 ## Remove stan model .exe file if already exists
-if(file.exists(here::here('scripts', 'stan', paste(model_to_fit$stan_file_noext, '.exe', sep = ""))) == T){
-  file.remove(here::here('scripts', 'stan', paste(model_to_fit$stan_file_noext, '.exe', sep = "")))
+if(file.exists(here::here('scripts', 'stan-files', paste(model_to_fit$stan_file_noext, '.exe', sep = ""))) == T){
+  file.remove(here::here('scripts', 'stan-files', paste(model_to_fit$stan_file_noext, '.exe', sep = "")))
 }
 
 ## Pre-compile model
 compiled_model <- cmdstan_model(
-  stan_file       = here::here('scripts', 'stan', model_to_fit$stan_file),
+  stan_file       = here::here('scripts', 'stan-files', model_to_fit$stan_file),
   force_recompile = T
 )
 
@@ -77,17 +81,14 @@ compiled_model <- cmdstan_model(
 ## Create containers for participant-level estimates
 m1_est_beta      <- rep(NA, times = n_participants) ## Inverse temperature
 m1_est_eta       <- rep(NA, times = n_participants) ## learning rate 
-m1_est_eta_sr    <- rep(NA, times = n_participants) ## Learning rate values during SR
-m1_est_delta_eta <- rep(NA, times = n_participants) ## Offset parameter for learning rate
+m1_est_delta_eta <- rep(NA, times = n_participants) ## Offset in learning rate in 'post' condition
 
 m1_beta_within_50ci       <- rep(NA, times = n_participants)  ## Inverse temperature
 m1_beta_within_90ci       <- rep(NA, times = n_participants)  ## Inverse temperature
 m1_eta_within_50ci        <- rep(NA, times = n_participants)  ## Learning rate
 m1_eta_within_90ci        <- rep(NA, times = n_participants)  ## Learning rate
-m1_eta_sr_within_50ci     <- rep(NA, times = n_participants)  ## Learning rate values during SR
-m1_eta_sr_within_90ci     <- rep(NA, times = n_participants)  ## Learning rate values during SR
-m1_delta_eta_within_50ci  <- rep(NA, times = n_participants)  ## Offset for learning rate
-m1_delta_eta_within_90ci  <- rep(NA, times = n_participants)  ## Offset for learning rate.
+m1_delta_eta_within_50ci        <- rep(NA, times = n_participants)  ## Learning rate
+m1_delta_eta_within_90ci        <- rep(NA, times = n_participants)  ## Learning rate
 
 
 ## Sampling
@@ -106,14 +107,17 @@ if(run_model_flag){
   
   ## Play audio cue
   beepr::beep("fanfare")
-  
+}
+
+## Save data
+if (run_model_flag){
   ## Print and/or save samples
   m1_fit$save_output_files(
     dir      = here::here("output"),
     basename = model_to_fit$model_name
   )
 }
-
+  
 
 # Extract variables ---------------- 
 
@@ -141,7 +145,30 @@ m1_ll_samples <- as.matrix(
 )
 m1_model_WAIC <- loo::waic(m1_ll_samples)
 
-## Extract parameter samples (m1_individual-level)
+
+#####################################################
+## Extract parameter samples (Group-level)
+#####################################################
+
+m1_group_par_samples_all <- read_cmdstan_csv(
+  files = output_files,
+  variables = model_to_fit$group_pars,
+  sampler_diagnostics = NULL,
+  format = getOption("cmdstanr_draws_format", "draws_df")
+)
+
+## Get median group parameter estimates
+m1_group_par_samples <- as.matrix(m1_group_par_samples_all$post_warmup_draws[,1:length(model_to_fit$group_pars)])
+m1_group_par_est     <- apply(m1_group_par_samples, MARGIN=2, FUN = median)
+m1_group_par_CI      <- apply(m1_group_par_samples, MARGIN = 2, FUN = quantile , probs = c(.025, .5, .975))
+
+## Extract model choices
+m1_pred_right_prop <- colMeans(m1_choice_pred$post_warmup_draws)[1:(40*150*2)]
+
+#####################################################
+## Extract parameter samples (Individual-level)
+#####################################################
+
 m1_indiv_par_samples_all <- read_cmdstan_csv(
   files= output_files,
   variables = model_to_fit$indiv_pars,
@@ -152,12 +179,11 @@ m1_indiv_par_samples_all <- read_cmdstan_csv(
 m1_indiv_par_samples <- vector(mode="list",
                                length=length(model_to_fit$indiv_pars))
 
-
 m1_indiv_par_est <- matrix(NA, nrow = m1_indiv_par_samples_all$metadata$stan_variable_sizes[[model_to_fit$indiv_pars[1]]],
                            ncol = length(model_to_fit$indiv_pars))
 colnames(m1_indiv_par_est) <- model_to_fit$indiv_pars
 
-## Plot distribution of participant parameters
+## Plot distribution for samples of individual participant parameters
 for (i in 1:length(m1_indiv_par_samples)){
   m1_indiv_par_samples[[i]] <-
     as.matrix(m1_indiv_par_samples_all$post_warmup_draws[seq(
@@ -171,62 +197,43 @@ for (i in 1:length(m1_indiv_par_samples)){
 }
 
 ## Code to get beta sample distribution for e.g., participant no. 11
-pt_id <- "11"
-pt_ix <- match(pt_id, rev_data$PtID %>% unique())
-param <- match("beta", model_bayes_precis_pp_offset$indiv_pars)  
-hist(m1_indiv_par_samples[[param]][, pt_ix], 30, main= paste("beta weight Samples for", pt_id))
+pt_id <- "18"
+pt_ix <- match(pt_id, sim_data$subject %>% unique())
+param <- match("beta", model_q_learning_pp_offset$indiv_pars)  
+hist(m1_indiv_par_samples[[param]][, pt_ix], 100, main= paste("Beta  Samples for", pt_id))
 
 ## Record median parameter values for each participant
 for (pt_ix in 1:n_participants){
-  m1_est_beta[pt_ix]      <- m1_indiv_par_samples[[1]][,pt_ix] %>% median()
-  m1_est_eta[pt_ix]       <- m1_indiv_par_samples[[2]][,pt_ix] %>% median()
-  m1_est_eta_sr[pt_ix]    <- m1_indiv_par_samples[[3]][,pt_ix] %>% median()
+  m1_est_beta[pt_ix]       <- m1_indiv_par_samples[[1]][,pt_ix] %>% median()
+  m1_est_eta[pt_ix]      <- m1_indiv_par_samples[[2]][,pt_ix] %>% median()
   m1_est_delta_eta[pt_ix] <- m1_indiv_par_samples[[4]][,pt_ix] %>% median()
+  
+  m1_beta_within_50ci[pt_ix] <- m1_est_beta[pt_ix] > quantile(m1_indiv_par_samples[[1]], 0.25) & m1_est_beta[pt_ix] < quantile(m1_indiv_par_samples[[1]], 0.75)
+  m1_beta_within_90ci[pt_ix] <- m1_est_beta[pt_ix] > quantile(m1_indiv_par_samples[[1]], 0.05) & m1_est_beta[pt_ix] < quantile(m1_indiv_par_samples[[1]], 0.95)
+  
+  m1_eta_within_50ci[pt_ix] <- m1_est_eta[pt_ix] > quantile(m1_indiv_par_samples[[2]], 0.25) & m1_est_eta[pt_ix] < quantile(m1_indiv_par_samples[[2]], 0.75)
+  m1_eta_within_90ci[pt_ix] <- m1_est_eta[pt_ix] > quantile(m1_indiv_par_samples[[2]], 0.05) & m1_est_eta[pt_ix] < quantile(m1_indiv_par_samples[[2]], 0.95)
+  
+  m1_delta_eta_within_50ci[pt_ix] <- m1_est_eta[pt_ix] > quantile(m1_indiv_par_samples[[4]], 0.25) & m1_est_eta[pt_ix] < quantile(m1_indiv_par_samples[[4]], 0.75)
+  m1_delta_eta_within_90ci[pt_ix] <- m1_est_eta[pt_ix] > quantile(m1_indiv_par_samples[[4]], 0.05) & m1_est_eta[pt_ix] < quantile(m1_indiv_par_samples[[4]], 0.95)
 }
-
-m1_beta_within_50ci[pt_ix] <- m1_est_beta[pt_ix] > quantile(m1_indiv_par_samples[[1]], 0.25) & m1_est_beta[pt_ix] < quantile(m1_indiv_par_samples[[1]], 0.75)
-m1_beta_within_90ci[pt_ix] <- m1_est_beta[pt_ix] > quantile(m1_indiv_par_samples[[1]], 0.05) & m1_est_beta[pt_ix] < quantile(m1_indiv_par_samples[[1]], 0.95)
-
-m1_eta_within_50ci[pt_ix] <- m1_est_eta[pt_ix] > quantile(m1_indiv_par_samples[[2]], 0.25) & m1_est_eta[pt_ix] < quantile(m1_indiv_par_samples[[2]], 0.75)
-m1_eta_within_90ci[pt_ix] <- m1_est_eta[pt_ix] > quantile(m1_indiv_par_samples[[2]], 0.05) & m1_est_eta[pt_ix] < quantile(m1_indiv_par_samples[[2]], 0.95)
-
-m1_eta_sr_within_50ci[pt_ix] <- m1_est_delta_eta[pt_ix] > quantile(m1_indiv_par_samples[[3]], 0.25) & m1_est_delta_eta[pt_ix] < quantile(m1_indiv_par_samples[[3]], 0.75)
-m1_eta_sr_within_90ci[pt_ix] <- m1_est_delta_eta[pt_ix] > quantile(m1_indiv_par_samples[[3]], 0.05) & m1_est_delta_eta[pt_ix] < quantile(m1_indiv_par_samples[[3]], 0.95)
-
-m1_delta_eta_within_50ci[pt_ix] <- m1_est_delta_eta[pt_ix] > quantile(m1_indiv_par_samples[[4]], 0.25) & m1_est_delta_eta[pt_ix] < quantile(m1_indiv_par_samples[[4]], 0.75)
-m1_delta_eta_within_90ci[pt_ix] <- m1_est_delta_eta[pt_ix] > quantile(m1_indiv_par_samples[[4]], 0.05) & m1_est_delta_eta[pt_ix] < quantile(m1_indiv_par_samples[[4]], 0.95)
 
 
 ## check calibration
-mean(m1_beta_within_50ci); mean(m1_beta_within_90ci)
 mean(m1_eta_within_50ci); mean(m1_eta_within_90ci)
+mean(m1_beta_within_50ci); mean(m1_beta_within_90ci)
 mean(m1_delta_eta_within_50ci); mean(m1_delta_eta_within_90ci)
 
-
-## Extract m1 group parameter estimates
-m1_group_par_samples_all <- read_cmdstan_csv(
-  files = output_files,
-  variables = model_to_fit$group_pars,
-  sampler_diagnostics = NULL,
-  format = getOption("cmdstanr_draws_format", "draws_df")
-)
-
-## Get median group parameter estimates
-m1_group_par_samples <- as.matrix(m1_group_par_samples_all$post_warmup_draws[,1:length(model_to_fit$group_pars)])
-m1_group_par_est     <- apply(m1_group_par_samples, MARGIN=2, FUN = median)
-
-## Get quantiles (credible intervals)
-apply(m1_group_par_samples, MARGIN=2, FUN=quantile, c(.025, .5, .975))
-
-
-## Extract model choices
-m1_pred_right_prop <- colMeans(m1_choice_pred$post_warmup_draws)[1:(40*150*2)]
-
+## Correlations with true parameter values
+cor.test(unique(sim_data$true_beta), m1_est_beta)
+cor.test(unique(sim_data$true_eta_pre), m1_est_eta)
+cor.test(unique(sim_data$true_delta_eta), m1_est_delta_eta)
 
 # m1: save model objects --------------------------------------------------
 
-m1_objects<-grep("m1_",names(.GlobalEnv),value=TRUE)
+m1_objects     <- grep("m1_",names(.GlobalEnv),value=TRUE)
 m1_object_list <- mget(m1_objects)
 save(m1_object_list, file = here::here("data", "m1_model_data.Rdata"))
+rm(m1_object_list)
 
 ## ======================

@@ -5,7 +5,7 @@ data {
   int n_options; // no. of options
   
   // Indices
-  array[T] int p_ix; // Pariticpant number for each datapoint
+  array[T] int p_ix; // Particpant number for each datapoint
  
   // Data
   array[T] int actions;          // Dependent variable: action taken (0 = option 1; 1 = option 2)
@@ -20,7 +20,6 @@ transformed data{
   real pr_switch              = .10;
   
   real reward                 = 1;
-
 }
 
 parameters{
@@ -121,6 +120,7 @@ generated quantities {
   // Choice log likelihood
   // lpmf = log prob mass function
   choice_log_lik[trial_ix] = bernoulli_logit_lpmf(actions[trial_ix] | alpha[trial_ix]);
+  
   // Choice predictions
   choice_pred[trial_ix] = bernoulli_logit_rng(alpha[trial_ix]); 
   }

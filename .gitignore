@@ -2,3 +2,4 @@ output/*
 .RData
 .Rhistory
 .Rproj.user
+data/m1_model_data.Rdata
